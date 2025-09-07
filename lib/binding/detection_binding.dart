@@ -1,0 +1,11 @@
+
+import 'package:get/get.dart';
+import 'package:palm_app/controller/detection_controller.dart';
+
+
+class DetectionBinding extends Bindings {
+  @override
+  void dependencies() {
+    Get.lazyPut(() => DetectionController());
+  }
+}
