@@ -7,7 +7,6 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:math' as math;
 import 'package:path/path.dart';
 
-
 class DetectionController extends GetxController {
   // ===== Camera =====
   RxBool isStreaming = false.obs;
@@ -28,7 +27,7 @@ class DetectionController extends GetxController {
 
   // prealloc input
   List<List<List<List<double>>>>? _inputF; // float32/float16
-  List<List<List<List<int>>>>? _inputI;    // int8/uint8
+  List<List<List<List<int>>>>? _inputI; // int8/uint8
 
   // resize maps cache
   List<int>? _mapX, _mapY, _mapXuv, _mapYuv;
@@ -46,17 +45,27 @@ class DetectionController extends GetxController {
   RxList<Map<String, dynamic>> recognitions = <Map<String, dynamic>>[].obs;
   RxInt ripeCount = 0.obs;
   RxInt unripeCount = 0.obs;
+   RxInt savedRipeTotal = 0.obs;
+  RxInt savedUnripeTotal = 0.obs;
   RxDouble imgW = 0.0.obs;
   RxDouble imgH = 0.0.obs;
   RxString summaryText = ''.obs;
 
   // thresholds
-  double confThresh = 0.50;
+  double confThresh = 0.5;
   double iouThresh = 0.45;
   int topK = 50;
 
-// ตัวแปรสำหรับเก็บข้อมูลทั้งหมด
+  // ตัวแปรสำหรับเก็บข้อมูลทั้งหมด
   RxList<Map<String, dynamic>> palmRecords = <Map<String, dynamic>>[].obs;
+
+   // ฟังก์ชันสำหรับบันทึกผลรวมเมื่อกด save
+  void saveCurrentCounts() {
+    savedRipeTotal.value += ripeCount.value;
+    savedUnripeTotal.value += unripeCount.value;
+    // สามารถเพิ่มการบันทึกลง palmRecords หรือฐานข้อมูลได้ตามต้องการ
+    debugPrint('Saved totals: ripe=${savedRipeTotal.value}, unripe=${savedUnripeTotal.value}');
+  }
 
   // ฐานข้อมูล
   Database? _database;
@@ -125,7 +134,6 @@ class DetectionController extends GetxController {
     }
   }
 
-
   @override
   Future<void> onInit() async {
     await _loadModelAndLabels();
@@ -157,26 +165,36 @@ class DetectionController extends GetxController {
         opt.addDelegate(XNNPackDelegate());
       } catch (_) {}
       _interp = await Interpreter.fromAsset(
-        'assets/models/best_int8.tflite', // รองรับทั้ง float / int8
+        'assets/models/palm_best_float16.tflite',
+        // 'assets/models/palm.tflite', // รองรับทั้ง float / int8
         options: opt,
       );
     } catch (e) {
-      debugPrint('! XNNPACK failed ($e), fallback CPU only');
+      debugPrint('⚠️! XNNPACK failed ($e), fallback CPU only');
       final opt = InterpreterOptions()..threads = 4;
       _interp = await Interpreter.fromAsset(
-        'assets/models/best_int8.tflite',
-        options: opt,
+        'assets/models/palm_best_float16.tflite',
+
+        options: opt, 
       );
     }
     debugPrint('✅ TFLite model loaded');
 
     // labels
-    final labelStr = await rootBundle.loadString('assets/models/palm.txt');
+    final labelStr = await rootBundle.loadString(
+      'assets/models/palm.txt'
+    );
     labels = labelStr
         .split('\n')
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
+
+    // เพิ่ม print รายชื่อคลาส
+    debugPrint('✅Loaded classes from palm.txt:');
+    for (int i = 0; i < labels.length; i++) {
+      debugPrint('[$i] ${labels[i]}');
+    }
 
     // input tensor
     final inT = _interp!.getInputTensors().first;
@@ -191,6 +209,8 @@ class DetectionController extends GetxController {
     final ip = inT.params;
     if (ip.scale != 0.0) _inScale = ip.scale;
     _inZero = ip.zeroPoint;
+    debugPrint('📥 Input tensor params: scale=$_inScale, zeroPoint=$_inZero');
+
 
     // output tensor
     final outT = _interp!.getOutputTensors().first;
@@ -200,18 +220,27 @@ class DetectionController extends GetxController {
       throw Exception('Unexpected output shape: $oshape');
     }
     if (oshape[1] == 6) {
-      _layoutCHW = true; valuesPerDet = oshape[1]; numDet = oshape[2];
+      _layoutCHW = true;
+      valuesPerDet = oshape[1];
+      numDet = oshape[2];
     } else if (oshape[2] == 6) {
-      _layoutCHW = false; valuesPerDet = oshape[2]; numDet = oshape[1];
+      _layoutCHW = false;
+      valuesPerDet = oshape[2];
+      numDet = oshape[1];
     } else {
       throw Exception('Cannot find 6-dim per detection in output: $oshape');
     }
     final op = outT.params;
     if (op.scale != 0.0) _outScale = op.scale;
     _outZero = op.zeroPoint;
+    debugPrint('📤 Output tensor params: scale=$_outScale, zeroPoint=$_outZero');
 
-    debugPrint('📥 Input: ${inW}x${inH}, type=$_inType (scale=$_inScale, zp=$_inZero)');
-    debugPrint('📤 Output: layoutCHW=$_layoutCHW, N=$numDet, type=$_outType (scale=$_outScale, zp=$_outZero)');
+    debugPrint(
+      '📥 Input: ${inW}x${inH}, type=$_inType (scale=$_inScale, zp=$_inZero)',
+    );
+    debugPrint(
+      '📤 Output: layoutCHW=$_layoutCHW, N=$numDet, type=$_outType (scale=$_outScale, zp=$_outZero)',
+    );
 
     _preparePreallocatedInputs();
 
@@ -220,15 +249,24 @@ class DetectionController extends GetxController {
 
   void _preparePreallocatedInputs() {
     if (inW == null || inH == null) return;
-    final isFloat = _inType == TensorType.float32 || _inType == TensorType.float16;
+    final isFloat =
+        _inType == TensorType.float32 || _inType == TensorType.float16;
     if (isFloat) {
       _inputF = List.generate(
-        1, (_) => List.generate(inH!, (_) => List.generate(inW!, (_) => List<double>.filled(3, 0.0))),
+        1,
+        (_) => List.generate(
+          inH!,
+          (_) => List.generate(inW!, (_) => List<double>.filled(3, 0.0)),
+        ),
       );
       _inputI = null;
     } else {
       _inputI = List.generate(
-        1, (_) => List.generate(inH!, (_) => List.generate(inW!, (_) => List<int>.filled(3, 0))),
+        1,
+        (_) => List.generate(
+          inH!,
+          (_) => List.generate(inW!, (_) => List<int>.filled(3, 0)),
+        ),
       );
       _inputF = null;
     }
@@ -286,7 +324,12 @@ class DetectionController extends GetxController {
 
   // ===== Stream Callback =====
   Future<void> _onFrame(CameraImage img) async {
-    if (_busy || _interp == null || inW == null || inH == null || numDet == null) return;
+    if (_busy ||
+        _interp == null ||
+        inW == null ||
+        inH == null ||
+        numDet == null)
+      return;
 
     _frameIdx = (_frameIdx + 1) % processEveryN;
     if (_frameIdx != 0) return;
@@ -327,7 +370,16 @@ class DetectionController extends GetxController {
         final rh = math.min(imgH.value, ymax) - ry;
 
         final idx = d.cls;
-        final clsName = (idx >= 0 && idx < labels.length) ? labels[idx] : 'Unknown';
+        final clsName = (idx >= 0 && idx < labels.length)
+            ? labels[idx]
+            : 'Unknown';
+
+        // เพิ่ม debug ตรงนี้
+        debugPrint(
+          '📥 Detected bbox: class=$clsName (idx=$idx), conf=${d.conf.toStringAsFixed(2)}, rect=($rx, $ry, $rw, $rh)',
+        );
+
+        // debugPrint('Summary: ripe=${ripeCount.value}, unripe=${unripeCount.value}');
 
         recognitions.add({
           'clsIndex': idx, // << เลขคลาส (0=ripe, 1=unripe)
@@ -354,17 +406,32 @@ class DetectionController extends GetxController {
 
   // ===== Helpers =====
   void _ensureResizeMaps(int srcW, int srcH, int dstW, int dstH) {
+     debugPrint('🧮 Creating resize maps: src=($srcW,$srcH) dst=($dstW,$dstH)');
     if (_srcW == srcW && _srcH == srcH && _mapX != null) return;
-    _srcW = srcW; _srcH = srcH;
-    _mapX  = List<int>.generate(dstW, (x) => ((x * srcW) / dstW).floor().clamp(0, srcW - 1));
-    _mapY  = List<int>.generate(dstH, (y) => ((y * srcH) / dstH).floor().clamp(0, srcH - 1));
-    _mapXuv = List<int>.generate(dstW, (x) => ((_mapX![x]) >> 1).clamp(0, (srcW >> 1) - 1));
-    _mapYuv = List<int>.generate(dstH, (y) => ((_mapY![y]) >> 1).clamp(0, (srcH >> 1) - 1));
+    _srcW = srcW;
+    _srcH = srcH;
+    _mapX = List<int>.generate(
+      dstW,
+      (x) => ((x * srcW) / dstW).floor().clamp(0, srcW - 1),
+    );
+    _mapY = List<int>.generate(
+      dstH,
+      (y) => ((y * srcH) / dstH).floor().clamp(0, srcH - 1),
+    );
+    _mapXuv = List<int>.generate(
+      dstW,
+      (x) => ((_mapX![x]) >> 1).clamp(0, (srcW >> 1) - 1),
+    );
+    _mapYuv = List<int>.generate(
+      dstH,
+      (y) => ((_mapY![y]) >> 1).clamp(0, (srcH >> 1) - 1),
+    );
   }
 
   // YUV420 → RGB + resize + (float/quant) เขียนลง buffer เดียว
   void _fillInputFromYUV(CameraImage cameraImage) {
-    final isFloat = _inType == TensorType.float32 || _inType == TensorType.float16;
+    final isFloat =
+        _inType == TensorType.float32 || _inType == TensorType.float16;
     final h = inH!, w = inW!;
 
     final pY = cameraImage.planes[0];
@@ -400,68 +467,105 @@ class DetectionController extends GetxController {
         int R = (Y + 1.370705 * V).round();
         int G = (Y - 0.337633 * U - 0.698001 * V).round();
         int B = (Y + 1.732446 * U).round();
-        if (R < 0) R = 0; else if (R > 255) R = 255;
-        if (G < 0) G = 0; else if (G > 255) G = 255;
-        if (B < 0) B = 0; else if (B > 255) B = 255;
+        if (R < 0)
+          R = 0;
+        else if (R > 255)
+          R = 255;
+        if (G < 0)
+          G = 0;
+        else if (G > 255)
+          G = 255;
+        if (B < 0)
+          B = 0;
+        else if (B > 255)
+          B = 255;
 
         if (isFloat) {
-          _inputF![0][dy][dx][0] = R / 255.0;
-          _inputF![0][dy][dx][1] = G / 255.0;
-          _inputF![0][dy][dx][2] = B / 255.0;
-        } else {
-          final qR = (((R / 255.0) / _inScale) + _inZero).round();
-          final qG = (((G / 255.0) / _inScale) + _inZero).round();
-          final qB = (((B / 255.0) / _inScale) + _inZero).round();
-          if (_inType == TensorType.int8) {
-            _inputI![0][dy][dx][0] = qR.clamp(-128, 127);
-            _inputI![0][dy][dx][1] = qG.clamp(-128, 127);
-            _inputI![0][dy][dx][2] = qB.clamp(-128, 127);
-          } else {
-            _inputI![0][dy][dx][0] = qR.clamp(0, 255);
-            _inputI![0][dy][dx][1] = qG.clamp(0, 255);
-            _inputI![0][dy][dx][2] = qB.clamp(0, 255);
-          }
-        }
+  final normR = R / 255.0;
+  final normG = G / 255.0;
+  final normB = B / 255.0;
+  if (dy == 0 && dx == 0) { // debug เฉพาะพิกเซลแรกในแต่ละภาพ
+    debugPrint('Normalize: R=$R, G=$G, B=$B -> normR=$normR, normG=$normG, normB=$normB');
+  }
+  _inputF![0][dy][dx][0] = normR;
+  _inputF![0][dy][dx][1] = normG;
+  _inputF![0][dy][dx][2] = normB;
+} else {
+  final qR = (((R / 255.0) / _inScale) + _inZero).round();
+  final qG = (((G / 255.0) / _inScale) + _inZero).round();
+  final qB = (((B / 255.0) / _inScale) + _inZero).round();
+  if (dy == 0 && dx == 0) { // debug เฉพาะพิกเซลแรกในแต่ละภาพ
+    debugPrint('Quantize: R=$R, G=$G, B=$B, scale=$_inScale, zeroPoint=$_inZero -> qR=$qR, qG=$qG, qB=$qB');
+  }
+  if (_inType == TensorType.int8) {
+    _inputI![0][dy][dx][0] = qR.clamp(-128, 127);
+    _inputI![0][dy][dx][1] = qG.clamp(-128, 127);
+    _inputI![0][dy][dx][2] = qB.clamp(-128, 127);
+  } else {
+    _inputI![0][dy][dx][0] = qR.clamp(0, 255);
+    _inputI![0][dy][dx][1] = qG.clamp(0, 255);
+    _inputI![0][dy][dx][2] = qB.clamp(0, 255);
+  }
+}
       }
     }
   }
 
   Object _prepareOutput() {
-    final isFloat = _outType == TensorType.float32 || _outType == TensorType.float16;
+    final isFloat =
+        _outType == TensorType.float32 || _outType == TensorType.float16;
     if (_layoutCHW) {
-      return [ List.generate(6, (_) => isFloat
-          ? List<double>.filled(numDet!, 0.0)
-          : List<int>.filled(numDet!, 0)) ];
+      return [
+        List.generate(
+          6,
+          (_) => isFloat
+              ? List<double>.filled(numDet!, 0.0)
+              : List<int>.filled(numDet!, 0),
+        ),
+      ];
     } else {
-      return [ List.generate(numDet!, (_) => isFloat
-          ? List<double>.filled(6, 0.0)
-          : List<int>.filled(6, 0)) ];
+      return [
+        List.generate(
+          numDet!,
+          (_) => isFloat ? List<double>.filled(6, 0.0) : List<int>.filled(6, 0),
+        ),
+      ];
     }
   }
 
   double _dq(num q) {
-    final isQuantOut = _outType == TensorType.int8 || _outType == TensorType.uint8;
-    if (isQuantOut) return _outScale * (q - _outZero);
-    return q.toDouble();
+  final isQuantOut =
+      _outType == TensorType.int8 || _outType == TensorType.uint8;
+  if (isQuantOut) {
+    final result = _outScale * (q - _outZero);
+    debugPrint('Dequantize: q=$q, scale=$_outScale, zeroPoint=$_outZero => $result');
+    return result;
   }
+  return q.toDouble();
+}
 
   // Parse (รองรับทั้ง [1,6,N] และ [1,N,6], ทั้ง xywh กับ x1y1x2y2)
   List<_Det> _parseDetections(Object output) {
-    final isFloat = _outType == TensorType.float32 || _outType == TensorType.float16;
+    final isFloat =
+        _outType == TensorType.float32 || _outType == TensorType.float16;
     final dets = <_Det>[];
 
     if (_layoutCHW) {
       final out = (output as List)[0] as List;
-      final xs = out[0] as List; final ys = out[1] as List;
-      final ws = out[2] as List; final hs = out[3] as List;
-      final cs = out[4] as List; final ks = out[5] as List;
+      final xs = out[0] as List;
+      final ys = out[1] as List;
+      final ws = out[2] as List;
+      final hs = out[3] as List;
+      final cs = out[4] as List;
+      final ks = out[5] as List;
       for (int i = 0; i < numDet!; i++) {
         final x = isFloat ? (xs[i] as num).toDouble() : _dq(xs[i] as num);
         final y = isFloat ? (ys[i] as num).toDouble() : _dq(ys[i] as num);
         final w = isFloat ? (ws[i] as num).toDouble() : _dq(ws[i] as num);
         final h = isFloat ? (hs[i] as num).toDouble() : _dq(hs[i] as num);
         final conf = isFloat ? (cs[i] as num).toDouble() : _dq(cs[i] as num);
-        final cls = (isFloat ? (ks[i] as num).toDouble() : _dq(ks[i] as num)).round();
+        final cls = (isFloat ? (ks[i] as num).toDouble() : _dq(ks[i] as num))
+            .round();
         dets.add(_Det(x, y, w, h, conf, cls));
       }
       return dets;
@@ -475,7 +579,8 @@ class DetectionController extends GetxController {
       final v2 = isFloat ? (row[2] as num).toDouble() : _dq(row[2] as num);
       final v3 = isFloat ? (row[3] as num).toDouble() : _dq(row[3] as num);
       final conf = isFloat ? (row[4] as num).toDouble() : _dq(row[4] as num);
-      final cls = (isFloat ? (row[5] as num).toDouble() : _dq(row[5] as num)).round();
+      final cls = (isFloat ? (row[5] as num).toDouble() : _dq(row[5] as num))
+          .round();
 
       final looksLikeNms = (v2 >= v0 && v3 >= v1) || (v2 > 1.5 || v3 > 1.5);
       if (looksLikeNms) {
@@ -495,7 +600,7 @@ class DetectionController extends GetxController {
     return dets;
   }
 
-  List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.45, int topK = 100}) {
+  List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.3, int topK = 100}) {
     dets.sort((a, b) => b.conf.compareTo(a.conf));
     final keep = <_Det>[];
     final used = List<bool>.filled(dets.length, false);
@@ -517,8 +622,14 @@ class DetectionController extends GetxController {
   }
 
   double _iou(_Det a, _Det b) {
-    final ax1 = a.x - a.w / 2, ay1 = a.y - a.h / 2, ax2 = a.x + a.w / 2, ay2 = a.y + a.h / 2;
-    final bx1 = b.x - b.w / 2, by1 = b.y - b.h / 2, bx2 = b.x + b.w / 2, by2 = b.y + b.h / 2;
+    final ax1 = a.x - a.w / 2,
+        ay1 = a.y - a.h / 2,
+        ax2 = a.x + a.w / 2,
+        ay2 = a.y + a.h / 2;
+    final bx1 = b.x - b.w / 2,
+        by1 = b.y - b.h / 2,
+        bx2 = b.x + b.w / 2,
+        by2 = b.y + b.h / 2;
 
     final interX1 = math.max(ax1, bx1);
     final interY1 = math.max(ay1, by1);

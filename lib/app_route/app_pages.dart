@@ -3,7 +3,7 @@ import 'package:palm_app/app_route/app_route.dart';
 import 'package:palm_app/binding/detection_binding.dart';
 import 'package:palm_app/pages/report_page.dart';
 import 'package:palm_app/pages/stream_detection_page.dart';
-import 'package:palm_app/pages/test.dart';
+
 
 class AppPages {
   static final pages = [
@@ -19,9 +19,6 @@ class AppPages {
       page: () => const StreanDetectionPage(),
     ),
     // เส้นทางสำหรับหน้า PalmReportPage
-    GetPage(
-      name: AppRoutes.reportPage, // เส้นทางไปหน้า ReportPage
-      page: () => const Test(), // หน้า ReportPage
-    ),
+    
   ];
 }

@@ -5,7 +5,6 @@ import 'package:palm_app/app_route/app_route.dart';
 import 'package:palm_app/color/colors.dart';
 import 'package:palm_app/controller/detection_controller.dart';
 import 'package:palm_app/pages/report_page.dart';
-import 'package:palm_app/pages/test.dart';
 
 class StreanDetectionPage extends GetView<DetectionController> {
   const StreanDetectionPage({super.key});
@@ -17,12 +16,14 @@ class StreanDetectionPage extends GetView<DetectionController> {
       switch (detectedClass) {
         case 'ripe':
           return PGreen;
-        default:
+        case 'unripe':
           return PRed;
+        default:
+          return PBlue;
       }
     }
 
-    List<Widget> renderMarkers(Size screen) {
+    List<Widget> renderBoxes(Size screen) {
       // แก้ไขจาก imageHeight/imageWidth เป็น imgH/imgW
       if (controller.imgH.value == 0.0 || controller.imgW.value == 0.0) {
         return [];
@@ -33,27 +34,33 @@ class StreanDetectionPage extends GetView<DetectionController> {
       double factorY = screen.height / controller.imgH.value;
 
       return controller.recognitions.map((re) {
-        if (re["confidenceInClass"] as double >= 0.5) {
-          // คำนวณตำแหน่งของจุดกลางของปาล์ม
-          double xCenter = re["rect"]["x"] + re["rect"]["w"] / 2;
-          double yCenter = re["rect"]["y"] + re["rect"]["h"] / 2;
-
+        if (re["confidenceInClass"] as double >= 0.1) {
           return Positioned(
-            left: xCenter * factorX - 5, // ลดขนาดจุดเพื่อให้เป็นจุด
-            top: yCenter * factorY - 5, // ลดขนาดจุดเพื่อให้เป็นจุด
+            left: re["rect"]["x"] * factorX,
+            top: re["rect"]["y"] * factorY,
+            width: re["rect"]["w"] * factorX,
+            height: re["rect"]["h"] * factorY,
             child: Container(
-              width: 10,
-              height: 10,
               decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: getBorderColor(
-                  re["detectedClass"],
-                ), // ใช้สีตามประเภท (สีเขียวสำหรับสุก, สีแดงสำหรับดิบ)
+                borderRadius: const BorderRadius.all(Radius.circular(10)),
+                border: Border.all(
+                  color: getBorderColor(re["detectedClass"]),
+                  width: 2,
+                ),
+              ),
+              child: Text(
+                "${re["detectedClass"]} ${(re["confidenceInClass"] * 100).toStringAsFixed(0)}%",
+                style: TextStyle(
+                  background: Paint()
+                    ..color = getBorderColor(re["detectedClass"]),
+                  color: PWhite,
+                  fontSize: 12.0,
+                ),
               ),
             ),
           );
         } else {
-          return const SizedBox.shrink(); // ถ้าความมั่นใจน้อยกว่า 50% ไม่แสดงอะไร
+          return const SizedBox.shrink();
         }
       }).toList();
     }
@@ -74,63 +81,61 @@ class StreanDetectionPage extends GetView<DetectionController> {
         backgroundColor: PBrown,
         actions: [
           IconButton(
-            icon: Icon(Icons.save,color: PWhite,),
+            icon: Icon(Icons.save, color: PWhite),
             onPressed: () {
               // นำทางไปยังหน้า ReportPage
               // นำทางไปยังหน้า ReportPage โดยใช้ Get.toNamed
               // Get.toNamed(AppRoutes.reportPage);
-              Get.to(() => const ReportPage()); 
+              Get.to(() => const ReportPage());
             },
           ),
         ],
       ),
+      backgroundColor: Pbgcolor,
       body: Obx(
         () => Column(
           children: [
             // ครึ่งบน: กล้อง
             Expanded(
-              flex: 5,
-              child: Container(
-                // margin: EdgeInsets.symmetric(vertical: 0, horizontal: 40),
-                color: Pbgcolor,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 0,
-                    horizontal: 40,
-                  ),
-                  child: SizedBox(
-                    child: Center(
-                      child: Container(
-                        color: Pbgcolor,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(20),
-                          child: Stack(
+              flex: 6,
+              child: AspectRatio(
+                aspectRatio:
+                    (controller.imgW.value > 0 && controller.imgH.value > 0)
+                    ? controller.imgW.value / controller.imgH.value
+                    : 640 / 480, // กำหนดค่า default เมื่อยังไม่มีค่า
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Stack(
+                    children: [
+                      Obx(() {
+                        if (controller.isInitialized.value) {
+                          return Stack(
                             children: [
-                              Obx(() {
-                                if (controller.isInitialized.value) {
-                                  return Stack(
-                                    children: [
-                                      CameraPreview(
-                                        controller.cameraController,
-                                      ),
-                                      ...renderMarkers(size), // ส่ง size เข้าไป
-                                    ],
-                                  );
-                                } else {
-                                  return Image.asset(
-                                    'assets/models/palmsuk1.jpg', // เปลี่ยนเป็น path ของ icon รูปกล้องที่คุณเตรียมไว้
-                                  );
-                                }
-                              }),
+                              CameraPreview(controller.cameraController),
+                              ...renderBoxes(
+                                Size(
+                                  controller.imgW.value > 0
+                                      ? controller.imgW.value
+                                      : 640,
+                                  controller.imgH.value > 0
+                                      ? controller.imgH.value
+                                      : 480,
+                                ),
+                              ), // ส่ง size เข้าไป
                             ],
-                          ),
-                        ),
-                      ),
-                    ),
+                          );
+                        } else {
+                          return Image.asset(
+                            'assets/models/palmsuk1.jpg', // เปลี่ยนเป็น path ของ icon รูปกล้องที่คุณเตรียมไว้
+                          );
+                        }
+                      }),
+                    ],
                   ),
                 ),
               ),
             ),
+            SizedBox(height: 20),
             // ครึ่งล่าง: ผลลัพธ์
             Expanded(
               flex: 3,
@@ -173,16 +178,18 @@ class StreanDetectionPage extends GetView<DetectionController> {
                             const SizedBox(height: 1),
                             _buildResultRow(
                               'ผลปาล์มสุก',
-                              PGreen,
+                              PGreen
+                              ,
                               controller.ripeCount.value,
                             ),
                             const SizedBox(height: 10),
                             _buildResultRow(
                               'ผลปาล์มดิบ',
-                              PRed,
+                              PBlue,
                               controller.unripeCount.value,
                             ),
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 GestureDetector(
                                   onTap: () => controller.toggleCamera(),
@@ -191,7 +198,7 @@ class StreanDetectionPage extends GetView<DetectionController> {
                                       margin: const EdgeInsets.symmetric(
                                         vertical: 25,
                                       ),
-                                      width: 140,
+                                      width: 110,
                                       height: 40,
                                       decoration: BoxDecoration(
                                         color: PBrown,
@@ -224,16 +231,17 @@ class StreanDetectionPage extends GetView<DetectionController> {
                                     ),
                                   ),
                                 ),
-                                SizedBox(width: 10.0,),
+                                SizedBox(width: 10.0),
                                 GestureDetector(
-                                   onTap: () async {
-                                    await controller.savePalmRecord(); // บันทึกข้อมูล
+                                  onTap: () async {
+                                    await controller
+                                        .savePalmRecord(); // บันทึกข้อมูล
                                   },
                                   child: Container(
                                     margin: const EdgeInsets.symmetric(
                                       vertical: 25,
                                     ),
-                                    width: 140,
+                                    width: 110,
                                     height: 40,
                                     decoration: BoxDecoration(
                                       color: PBrown,

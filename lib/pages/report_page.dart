@@ -11,7 +11,7 @@ class ReportPage extends GetView<DetectionController> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          'รายงานผลการตรวจจับปาล์ม',
+          'รายงานผล',
           style: TextStyle(
             color: PWhite,
             fontSize: 25,
@@ -41,8 +41,8 @@ class ReportPage extends GetView<DetectionController> {
                         label: 'ผลรวมทั้งหมด',
                         color: PBlue,
                         count:
-                            controller.ripeCount.value +
-                            controller.unripeCount.value,
+                            controller.savedRipeTotal.value +
+                            controller.savedUnripeTotal.value,
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -53,12 +53,12 @@ class ReportPage extends GetView<DetectionController> {
                         _buildDashboardRow(
                           label: 'ปาล์มสุก',
                           color: PGreen,
-                          count: controller.ripeCount.value,
+                          count: controller.savedRipeTotal.value,
                         ),
                         _buildDashboardRow(
                           label: 'ปาล์มดิบ',
                           color: PRed,
-                          count: controller.unripeCount.value,
+                          count: controller.savedUnripeTotal.value,
                         ),
                       ],
                     ),
@@ -107,45 +107,47 @@ class ReportPage extends GetView<DetectionController> {
 
               // ตารางแสดงข้อมูล
               Expanded(
-                child: DataTable(
-                  columns: const [
-                    DataColumn(
-                      label: Text(
-                        'เวลาและวันที่',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
+                child: SingleChildScrollView(
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(
+                        label: Text(
+                          'เวลาและวันที่',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                    DataColumn(
-                      label: Text(
-                        'ระดับความสุก',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
+                      DataColumn(
+                        label: Text(
+                          'ปาล์มสุก',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                    DataColumn(
-                      label: Text(
-                        'จำนวน',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
+                      DataColumn(
+                        label: Text(
+                          'ปาล์มดิบ',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                  rows: controller.palmRecords.map((record) {
-                    return DataRow(
-                      cells: [
-                        DataCell(Text(record['date'])),
-                        DataCell(Text(record['ripeCount'].toString())),
-                        DataCell(Text(record['unripeCount'].toString())),
-                      ],
-                    );
-                  }).toList(),
+                    ],
+                    rows: controller.palmRecords.map((record) {
+                      return DataRow(
+                        cells: [
+                          DataCell(Text(record['date'])),
+                          DataCell(Text(record['ripeCount'].toString())),
+                          DataCell(Text(record['unripeCount'].toString())),
+                        ],
+                      );
+                    }).toList(),
+                  ),
                 ),
               ),
             ],
