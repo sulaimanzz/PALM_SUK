@@ -14,32 +14,64 @@ class StreanDetectionPage extends GetView<DetectionController> {
     // เปลี่ยนสีrenderBox
     Color getBorderColor(String detectedClass) {
       switch (detectedClass) {
-        case 'ripe':
-          return PGreen;
         case 'unripe':
           return PRed;
+        // case 'ripe':
+        //   return PRed;
         default:
-          return PBlue;
+          return PGreen;
       }
     }
 
+    // ในไฟล์ stream_detection_page.dart
+    // ...
     List<Widget> renderBoxes(Size screen) {
-      // แก้ไขจาก imageHeight/imageWidth เป็น imgH/imgW
-      if (controller.imgH.value == 0.0 || controller.imgW.value == 0.0) {
+      if (controller.imgW.value == 0.0 || controller.imgH.value == 0.0) {
         return [];
       }
 
-      // แก้ไขจาก imageHeight/imageWidth เป็น imgH/imgW
-      double factorX = screen.width / controller.imgW.value;
-      double factorY = screen.height / controller.imgH.value;
-
       return controller.recognitions.map((re) {
-        if (re["confidenceInClass"] as double >= 0.1) {
+        if (re["confidenceInClass"] as double >= 0.2) {
+          final rect = re["rect"];
+
+          // คำนวณพิกัดใหม่เพื่อแก้ไขการหมุนและสะท้อน
+          final double normalizedX =
+              (controller.imgH.value - (rect["y"] + rect["h"])) /
+              controller.imgH.value;
+          final double normalizedY = rect["x"] / controller.imgW.value * 1.88 ;
+          final double normalizedW = rect["h"] / controller.imgH.value * 1.1;
+          final double normalizedH = rect["w"] / controller.imgW.value * 1.38;
+
+          // คำนวณขนาดจริงของ camera preview ที่แสดงบนหน้าจอ
+          final double cameraAspectRatio =
+              controller.imgW.value / controller.imgH.value;
+          final double screenAspectRatio = screen.width / screen.height;
+
+          double previewWidth, previewHeight;
+          double offsetX = 0, offsetY = 0;
+
+          if (cameraAspectRatio > screenAspectRatio) {
+            previewWidth = screen.width;
+            previewHeight = screen.width / cameraAspectRatio;
+            offsetY = (screen.height - previewHeight) / 2;
+          } else {
+            previewHeight = screen.height;
+            previewWidth = screen.height * cameraAspectRatio;
+            offsetX = (screen.width - previewWidth) / 2;
+          }
+
+          // แปลงเป็น screen coordinates
+          final double screenX = offsetX + (normalizedX * previewWidth);
+          final double screenY = offsetY + (normalizedY * previewHeight);
+          final double screenW = normalizedW * previewWidth;
+          final double screenH = normalizedH * previewHeight;
+
+          // ... ส่วนที่เหลือของโค้ด Container
           return Positioned(
-            left: re["rect"]["x"] * factorX,
-            top: re["rect"]["y"] * factorY,
-            width: re["rect"]["w"] * factorX,
-            height: re["rect"]["h"] * factorY,
+            left: screenX,
+            top: screenY,
+            width: screenW,
+            height: screenH,
             child: Container(
               decoration: BoxDecoration(
                 borderRadius: const BorderRadius.all(Radius.circular(10)),
@@ -97,60 +129,62 @@ class StreanDetectionPage extends GetView<DetectionController> {
           children: [
             // ครึ่งบน: กล้อง
             Expanded(
-              flex: 6,
+              flex: 43,
               child: AspectRatio(
                 aspectRatio:
                     (controller.imgW.value > 0 && controller.imgH.value > 0)
                     ? controller.imgW.value / controller.imgH.value
                     : 640 / 480, // กำหนดค่า default เมื่อยังไม่มีค่า
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Stack(
-                    children: [
-                      Obx(() {
-                        if (controller.isInitialized.value) {
-                          return Stack(
-                            children: [
-                              CameraPreview(controller.cameraController),
-                              ...renderBoxes(
-                                Size(
-                                  controller.imgW.value > 0
-                                      ? controller.imgW.value
-                                      : 640,
-                                  controller.imgH.value > 0
-                                      ? controller.imgH.value
-                                      : 480,
-                                ),
-                              ), // ส่ง size เข้าไป
-                            ],
-                          );
-                        } else {
-                          return Image.asset(
-                            'assets/models/palmsuk1.jpg', // เปลี่ยนเป็น path ของ icon รูปกล้องที่คุณเตรียมไว้
-                          );
-                        }
-                      }),
-                    ],
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 20, left: 20, right: 20 ,bottom: 15),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Stack(
+                      children: [
+                        Obx(() {
+                          if (controller.isInitialized.value) {
+                            return Stack(
+                              children: [
+                                CameraPreview(controller.cameraController),
+                                ...renderBoxes(
+                                  Size(
+                                    controller.imgW.value > 0
+                                        ? controller.imgW.value
+                                        : 640,
+                                    controller.imgH.value > 0
+                                        ? controller.imgH.value
+                                        : 480,
+                                  ),
+                                ), // ส่ง size เข้าไป
+                              ],
+                            );
+                          } else {
+                            return Image.asset(
+                              'assets/models/palmsuk1.jpg', // เปลี่ยนเป็น path ของ icon รูปกล้องที่คุณเตรียมไว้
+                            );
+                          }
+                        }),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-            SizedBox(height: 20),
             // ครึ่งล่าง: ผลลัพธ์
             Expanded(
-              flex: 3,
+              flex: 21,
               child: Stack(
                 children: [
                   Container(color: Pbgcolor),
                   Padding(
                     padding: const EdgeInsets.only(
                       top: 0,
-                      left: 40,
-                      right: 40,
+                      left: 20,
+                      right: 20,
                       bottom: 30,
                     ),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      padding: const EdgeInsets.symmetric(horizontal: 30),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(16),
@@ -162,7 +196,7 @@ class StreanDetectionPage extends GetView<DetectionController> {
                             Center(
                               child: Padding(
                                 padding: const EdgeInsets.only(
-                                  top: 25,
+                                  top: 15,
                                   bottom: 15,
                                 ),
                                 child: Text(
@@ -178,14 +212,13 @@ class StreanDetectionPage extends GetView<DetectionController> {
                             const SizedBox(height: 1),
                             _buildResultRow(
                               'ผลปาล์มสุก',
-                              PGreen
-                              ,
+                              PGreen,
                               controller.ripeCount.value,
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 5.0),
                             _buildResultRow(
                               'ผลปาล์มดิบ',
-                              PBlue,
+                              PRed,
                               controller.unripeCount.value,
                             ),
                             Row(

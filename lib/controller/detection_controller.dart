@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:math' as math;
 import 'package:path/path.dart';
+import 'package:intl/intl.dart';
 
 class DetectionController extends GetxController {
   // ===== Camera =====
@@ -34,7 +35,7 @@ class DetectionController extends GetxController {
   int _srcW = -1, _srcH = -1;
 
   // throttling
-  int processEveryN = 1; // 1 = ทุกเฟรม (ถ้าอยากเบา CPU ตั้งเป็น 2/3)
+  int processEveryN = 5; // 1 = ทุกเฟรม (ถ้าอยากเบา CPU ตั้งเป็น 2/3)
   int _frameIdx = 0;
   bool _busy = false;
 
@@ -45,27 +46,19 @@ class DetectionController extends GetxController {
   RxList<Map<String, dynamic>> recognitions = <Map<String, dynamic>>[].obs;
   RxInt ripeCount = 0.obs;
   RxInt unripeCount = 0.obs;
-   RxInt savedRipeTotal = 0.obs;
+  RxInt savedRipeTotal = 0.obs;
   RxInt savedUnripeTotal = 0.obs;
   RxDouble imgW = 0.0.obs;
   RxDouble imgH = 0.0.obs;
   RxString summaryText = ''.obs;
 
-  // thresholds
-  double confThresh = 0.5;
-  double iouThresh = 0.45;
-  int topK = 50;
-
-  // ตัวแปรสำหรับเก็บข้อมูลทั้งหมด
   RxList<Map<String, dynamic>> palmRecords = <Map<String, dynamic>>[].obs;
+  Rx<DateTime?> selectedDate = Rx<DateTime?>(null);
 
-   // ฟังก์ชันสำหรับบันทึกผลรวมเมื่อกด save
-  void saveCurrentCounts() {
-    savedRipeTotal.value += ripeCount.value;
-    savedUnripeTotal.value += unripeCount.value;
-    // สามารถเพิ่มการบันทึกลง palmRecords หรือฐานข้อมูลได้ตามต้องการ
-    debugPrint('Saved totals: ripe=${savedRipeTotal.value}, unripe=${savedUnripeTotal.value}');
-  }
+  // thresholds
+  double confThresh = 0.3;
+  double iouThresh = 0.3;
+  int topK = 50;
 
   // ฐานข้อมูล
   Database? _database;
@@ -93,6 +86,14 @@ class DetectionController extends GetxController {
     ''');
   }
 
+  // Update this function to save to DB and trigger data refresh
+  void saveCurrentCounts() {
+    savePalmRecord();
+    debugPrint(
+      'Saved record: ripe=${ripeCount.value}, unripe=${unripeCount.value}',
+    );
+  }
+
   // ฟังก์ชันบันทึกข้อมูล
   Future<void> savePalmRecord() async {
     final db = await database;
@@ -102,41 +103,84 @@ class DetectionController extends GetxController {
       'ripeCount': ripeCount.value,
       'unripeCount': unripeCount.value,
     });
-
-    // เก็บข้อมูลไว้ใน palmRecords เพื่อใช้ใน UI
-    palmRecords.add({
-      'date': date,
-      'ripeCount': ripeCount.value,
-      'unripeCount': unripeCount.value,
-    });
+    ripeCount.value = 0;
+    unripeCount.value = 0;
+    // รีเฟรชข้อมูลในตารางและอัปเดต Dashboard
+    await getPalmRecords(selectedDate.value);
   }
 
-  // ฟังก์ชันดึงข้อมูลทั้งหมดจากฐานข้อมูล
-  Future<void> getPalmRecords() async {
+  // ฟังก์ชันดึงข้อมูลทั้งหมดจากฐานข้อมูลตามวันที่เลือก
+  Future<void> getPalmRecords([DateTime? date]) async {
     final db = await database;
-    final List<Map<String, dynamic>> records = await db.query('palm_records');
+    String? whereClause;
+    List<dynamic>? whereArgs;
+
+    if (date != null) {
+      final dateString = DateFormat('yyyy-MM-dd').format(date);
+      whereClause = 'date LIKE ?';
+      whereArgs = ['%$dateString%'];
+    }
+
+    final List<Map<String, dynamic>> records = await db.query(
+      'palm_records',
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: 'date DESC',
+    );
     palmRecords.value = records;
+    await updateDashboardStats(date); // อัปเดต Dashboard ตามข้อมูลในตาราง
   }
 
-  // ฟังก์ชันคำนวณผลรวม
-  Future<void> getDashboardStats() async {
+  // ฟังก์ชันคำนวณผลรวมสำหรับวันที่ระบุ
+  Future<void> updateDashboardStats(DateTime? date) async {
     final db = await database;
+    String? whereClause;
+    List<dynamic>? whereArgs;
+
+    if (date != null) {
+      final dateString = DateFormat('yyyy-MM-dd').format(date);
+      whereClause = 'date LIKE ?';
+      whereArgs = ['%$dateString%'];
+    } else {
+      // If no date is selected, use today's date
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      whereClause = 'date LIKE ?';
+      whereArgs = ['%$today%'];
+    }
+
     final List<Map<String, dynamic>> stats = await db.rawQuery('''
       SELECT SUM(ripeCount) as totalRipe, SUM(unripeCount) as totalUnripe
       FROM palm_records
-    ''');
+      WHERE $whereClause
+    ''', whereArgs);
 
     if (stats.isNotEmpty) {
       final totalRipe = stats[0]['totalRipe'] ?? 0;
       final totalUnripe = stats[0]['totalUnripe'] ?? 0;
-      ripeCount.value = totalRipe;
-      unripeCount.value = totalUnripe;
+      savedRipeTotal.value = int.tryParse(totalRipe.toString()) ?? 0;
+      savedUnripeTotal.value = int.tryParse(totalUnripe.toString()) ?? 0;
+    }
+  }
+
+  // ฟังก์ชันสำหรับเลือกวันที่
+  Future<void> selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: selectedDate.value ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      selectedDate.value = picked;
+      getPalmRecords(picked); // เรียกใช้ getPalmRecords เพื่อกรองข้อมูล
     }
   }
 
   @override
   Future<void> onInit() async {
     await _loadModelAndLabels();
+    selectedDate.value = DateTime.now();
+    await getPalmRecords(selectedDate.value);
     super.onInit();
   }
 
@@ -165,7 +209,9 @@ class DetectionController extends GetxController {
         opt.addDelegate(XNNPackDelegate());
       } catch (_) {}
       _interp = await Interpreter.fromAsset(
-        'assets/models/palm_best_float16.tflite',
+        'assets/models/best_int8.tflite',
+        // 'assets/models/int8.tflite',
+        // 'assets/models/palm_best_float16.tflite',
         // 'assets/models/palm.tflite', // รองรับทั้ง float / int8
         options: opt,
       );
@@ -173,17 +219,17 @@ class DetectionController extends GetxController {
       debugPrint('⚠️! XNNPACK failed ($e), fallback CPU only');
       final opt = InterpreterOptions()..threads = 4;
       _interp = await Interpreter.fromAsset(
-        'assets/models/palm_best_float16.tflite',
+        // 'assets/models/best_int8.tflite',
 
-        options: opt, 
+        // 'assets/models/int8.tflite',
+        'assets/models/best_float16.tflite',
+        options: opt,
       );
     }
     debugPrint('✅ TFLite model loaded');
 
     // labels
-    final labelStr = await rootBundle.loadString(
-      'assets/models/palm.txt'
-    );
+    final labelStr = await rootBundle.loadString('assets/models/palm.txt');
     labels = labelStr
         .split('\n')
         .map((e) => e.trim())
@@ -211,7 +257,6 @@ class DetectionController extends GetxController {
     _inZero = ip.zeroPoint;
     debugPrint('📥 Input tensor params: scale=$_inScale, zeroPoint=$_inZero');
 
-
     // output tensor
     final outT = _interp!.getOutputTensors().first;
     _outType = outT.type;
@@ -233,7 +278,9 @@ class DetectionController extends GetxController {
     final op = outT.params;
     if (op.scale != 0.0) _outScale = op.scale;
     _outZero = op.zeroPoint;
-    debugPrint('📤 Output tensor params: scale=$_outScale, zeroPoint=$_outZero');
+    debugPrint(
+      '📤 Output tensor params: scale=$_outScale, zeroPoint=$_outZero',
+    );
 
     debugPrint(
       '📥 Input: ${inW}x${inH}, type=$_inType (scale=$_inScale, zp=$_inZero)',
@@ -352,48 +399,85 @@ class DetectionController extends GetxController {
       _interp!.run(input, output);
 
       final dets = _parseDetections(output);
+
+      // 🔍 **แก้ไข** - แสดงเฉพาะสรุป ไม่แสดงทุก detection
+      debugPrint('🔍 Total detections: ${dets.length}');
+
+      // แสดงเฉพาะ detection ที่มี confidence > 0.1
+      final validDets = dets.where((d) => d.conf > 0.1).toList();
+      debugPrint('🔍 Valid detections (conf > 0.1): ${validDets.length}');
+
+      // แสดงแค่ 5 ตัวแรกที่มี confidence สูงสุด
+      validDets.sort((a, b) => b.conf.compareTo(a.conf));
+      for (int i = 0; i < math.min(5, validDets.length); i++) {
+        final d = validDets[i];
+        final label = d.cls >= 0 && d.cls < labels.length
+            ? labels[d.cls]
+            : "unknown";
+        debugPrint(
+          '  🎯 Top${i + 1}: $label (conf=${d.conf.toStringAsFixed(3)}, cls=${d.cls})',
+        );
+      }
+
+      // กรองผลลัพธ์ตาม confidence threshold
+      final beforeNMS = dets.where((d) => d.conf >= confThresh).toList();
+      debugPrint(
+        '🔍 After confidence filter (>=$confThresh): ${beforeNMS.length}',
+      );
+
       final filtered = _nms(
-        dets.where((d) => d.conf >= confThresh).toList(),
+        dets.where((d) => d.conf >= 0.1).toList(), // ใช้ค่าเริ่มต้นที่ต่ำก่อนกรอง
         iouThresh: iouThresh,
         topK: topK,
       );
 
+      // final filtered = dets.where((d) => d.conf >= confThresh).toList();
+
+      // 🎯 **ส่วนที่แก้ไขและเพิ่ม Debug**
       for (final d in filtered) {
-        final xmin = (d.x - d.w / 2) * imgW.value;
-        final ymin = (d.y - d.h / 2) * imgH.value;
-        final xmax = (d.x + d.w / 2) * imgW.value;
-        final ymax = (d.y + d.h / 2) * imgH.value;
-
-        final rx = math.max(0.0, xmin);
-        final ry = math.max(0.0, ymin);
-        final rw = math.min(imgW.value, xmax) - rx;
-        final rh = math.min(imgH.value, ymax) - ry;
-
         final idx = d.cls;
         final clsName = (idx >= 0 && idx < labels.length)
             ? labels[idx]
             : 'Unknown';
 
-        // เพิ่ม debug ตรงนี้
-        debugPrint(
-          '📥 Detected bbox: class=$clsName (idx=$idx), conf=${d.conf.toStringAsFixed(2)}, rect=($rx, $ry, $rw, $rh)',
-        );
-
-        // debugPrint('Summary: ripe=${ripeCount.value}, unripe=${unripeCount.value}');
-
-        recognitions.add({
-          'clsIndex': idx, // << เลขคลาส (0=ripe, 1=unripe)
-          'detectedClass': clsName,
-          'confidenceInClass': d.conf,
-          'rect': {'x': rx, 'y': ry, 'w': rw, 'h': rh},
-        });
-
-        if (clsName == 'ripe') {
+        // กำหนดเงื่อนไขการแสดงผลตามความมั่นใจของแต่ละคลาส
+        bool shouldShow = false;
+        if (clsName == 'ripe' && d.conf >= 0.70) {
+          shouldShow = true;
           ripeCount.value++;
-        } else if (clsName == 'unripe') {
+        } else if (clsName == 'unripe' && d.conf >= 0.20) {
+          shouldShow = true;
           unripeCount.value++;
         }
+
+        if (shouldShow) {
+          final xmin = (d.x - d.w / 2) * imgW.value;
+          final ymin = (d.y - d.h / 2) * imgH.value;
+          final xmax = (d.x + d.w / 2) * imgW.value;
+          final ymax = (d.y + d.h / 2) * imgH.value;
+
+          final rx = math.max(0.0, xmin);
+          final ry = math.max(0.0, ymin);
+          final rw = math.min(imgW.value, xmax) - rx;
+          final rh = math.min(imgH.value, ymax) - ry;
+          
+          // Debug logs for verification
+          debugPrint(
+            '🔍 [DEBUG] Class: $clsName, Confidence: ${d.conf.toStringAsFixed(2)}',
+          );
+          debugPrint(
+            '🔍 [DEBUG] Bbox: x=$rx, y=$ry, w=$rw, h=$rh',
+          );
+          
+          recognitions.add({
+            'clsIndex': idx,
+            'detectedClass': clsName,
+            'confidenceInClass': d.conf,
+            'rect': {'x': rx, 'y': ry, 'w': rw, 'h': rh},
+          });
+        }
       }
+      // 🎯 **สิ้นสุดส่วนที่แก้ไข**
 
       summaryText.value =
           'พบปาล์มสุก ${ripeCount.value} | ปาล์มดิบ ${unripeCount.value} | รวม ${ripeCount.value + unripeCount.value}';
@@ -406,7 +490,7 @@ class DetectionController extends GetxController {
 
   // ===== Helpers =====
   void _ensureResizeMaps(int srcW, int srcH, int dstW, int dstH) {
-     debugPrint('🧮 Creating resize maps: src=($srcW,$srcH) dst=($dstW,$dstH)');
+    debugPrint('🧮 Creating resize maps: src=($srcW,$srcH) dst=($dstW,$dstH)');
     if (_srcW == srcW && _srcH == srcH && _mapX != null) return;
     _srcW = srcW;
     _srcH = srcH;
@@ -429,6 +513,7 @@ class DetectionController extends GetxController {
   }
 
   // YUV420 → RGB + resize + (float/quant) เขียนลง buffer เดียว
+  // แทนที่ method _fillInputFromYUV ใน DetectionController
   void _fillInputFromYUV(CameraImage cameraImage) {
     final isFloat =
         _inType == TensorType.float32 || _inType == TensorType.float16;
@@ -449,6 +534,9 @@ class DetectionController extends GetxController {
     final rsV = pV.bytesPerRow;
     final psV = pV.bytesPerPixel ?? 1;
 
+    // Debug sample pixels
+    int debugCount = 0;
+
     for (int dy = 0; dy < h; dy++) {
       final sy = _mapY![dy];
       final suvY = _mapYuv![dy];
@@ -464,49 +552,40 @@ class DetectionController extends GetxController {
         final U = (uBytes[uIndex] & 0xff) - 128;
         final V = (vBytes[vIndex] & 0xff) - 128;
 
-        int R = (Y + 1.370705 * V).round();
-        int G = (Y - 0.337633 * U - 0.698001 * V).round();
-        int B = (Y + 1.732446 * U).round();
-        if (R < 0)
-          R = 0;
-        else if (R > 255)
-          R = 255;
-        if (G < 0)
-          G = 0;
-        else if (G > 255)
-          G = 255;
-        if (B < 0)
-          B = 0;
-        else if (B > 255)
-          B = 255;
+        // YUV to RGB conversion (แก้ไขสูตร)
+        int R = (Y + 1.402 * V).round().clamp(0, 255);
+        int G = (Y - 0.344136 * U - 0.714136 * V).round().clamp(0, 255);
+        int B = (Y + 1.772 * U).round().clamp(0, 255);
 
         if (isFloat) {
-  final normR = R / 255.0;
-  final normG = G / 255.0;
-  final normB = B / 255.0;
-  if (dy == 0 && dx == 0) { // debug เฉพาะพิกเซลแรกในแต่ละภาพ
-    debugPrint('Normalize: R=$R, G=$G, B=$B -> normR=$normR, normG=$normG, normB=$normB');
-  }
-  _inputF![0][dy][dx][0] = normR;
-  _inputF![0][dy][dx][1] = normG;
-  _inputF![0][dy][dx][2] = normB;
-} else {
-  final qR = (((R / 255.0) / _inScale) + _inZero).round();
-  final qG = (((G / 255.0) / _inScale) + _inZero).round();
-  final qB = (((B / 255.0) / _inScale) + _inZero).round();
-  if (dy == 0 && dx == 0) { // debug เฉพาะพิกเซลแรกในแต่ละภาพ
-    debugPrint('Quantize: R=$R, G=$G, B=$B, scale=$_inScale, zeroPoint=$_inZero -> qR=$qR, qG=$qG, qB=$qB');
-  }
-  if (_inType == TensorType.int8) {
-    _inputI![0][dy][dx][0] = qR.clamp(-128, 127);
-    _inputI![0][dy][dx][1] = qG.clamp(-128, 127);
-    _inputI![0][dy][dx][2] = qB.clamp(-128, 127);
-  } else {
-    _inputI![0][dy][dx][0] = qR.clamp(0, 255);
-    _inputI![0][dy][dx][1] = qG.clamp(0, 255);
-    _inputI![0][dy][dx][2] = qB.clamp(0, 255);
-  }
-}
+          // **สำคัญ**: ใช้ _inScale สำหรับ normalization
+          _inputF![0][dy][dx][0] = R * _inScale; // แทน R / 255.0
+          _inputF![0][dy][dx][1] = G * _inScale; // แทน G / 255.0
+          _inputF![0][dy][dx][2] = B * _inScale; // แทน B / 255.0
+        } else {
+          // สำหรับ quantized models
+          final qR = ((R * _inScale) + _inZero).round();
+          final qG = ((G * _inScale) + _inZero).round();
+          final qB = ((B * _inScale) + _inZero).round();
+
+          if (_inType == TensorType.int8) {
+            _inputI![0][dy][dx][0] = qR.clamp(-128, 127);
+            _inputI![0][dy][dx][1] = qG.clamp(-128, 127);
+            _inputI![0][dy][dx][2] = qB.clamp(-128, 127);
+          } else {
+            _inputI![0][dy][dx][0] = qR.clamp(0, 255);
+            _inputI![0][dy][dx][1] = qG.clamp(0, 255);
+            _inputI![0][dy][dx][2] = qB.clamp(0, 255);
+          }
+        }
+
+        // Debug first few pixels
+        if (debugCount < 3) {
+          debugPrint(
+            '🎨 Pixel[$dx,$dy]: YUV=($Y,$U,$V) -> RGB=($R,$G,$B) -> norm=(${R * _inScale}, ${G * _inScale}, ${B * _inScale})',
+          );
+          debugCount++;
+        }
       }
     }
   }
@@ -534,30 +613,77 @@ class DetectionController extends GetxController {
   }
 
   double _dq(num q) {
-  final isQuantOut =
-      _outType == TensorType.int8 || _outType == TensorType.uint8;
-  if (isQuantOut) {
-    final result = _outScale * (q - _outZero);
-    debugPrint('Dequantize: q=$q, scale=$_outScale, zeroPoint=$_outZero => $result');
-    return result;
+    final isQuantOut =
+        _outType == TensorType.int8 || _outType == TensorType.uint8;
+    if (isQuantOut) {
+      final result = _outScale * (q - _outZero);
+      debugPrint(
+        'Dequantize: q=$q, scale=$_outScale, zeroPoint=$_outZero => $result',
+      );
+      return result;
+    }
+    return q.toDouble();
   }
-  return q.toDouble();
-}
 
   // Parse (รองรับทั้ง [1,6,N] และ [1,N,6], ทั้ง xywh กับ x1y1x2y2)
+  // แทนที่ method _parseDetections ด้วยโค้ดนี้
   List<_Det> _parseDetections(Object output) {
     final isFloat =
         _outType == TensorType.float32 || _outType == TensorType.float16;
     final dets = <_Det>[];
 
+    // Debug raw output
+    debugPrint('📤 Raw output type: ${output.runtimeType}');
+    if (output is List) {
+      final out0 = output[0];
+      debugPrint('📤 Output[0] type: ${out0.runtimeType}');
+
+      if (out0 is List) {
+        debugPrint('📤 Output shape: [${output.length}, ${out0.length}]');
+
+        // ตรวจสอบค่าตัวอย่าง
+        if (out0.isNotEmpty && out0[0] is List) {
+          final firstRow = out0[0] as List;
+          debugPrint(
+            '📤 First detection sample: [${firstRow.take(6).join(', ')}]',
+          );
+        }
+      }
+    }
+
     if (_layoutCHW) {
+      // Layout: [1, 6, N] - channels first
       final out = (output as List)[0] as List;
+
+      if (out.length < 6) {
+        debugPrint('❌ Output channels < 6: ${out.length}');
+        return dets;
+      }
+
       final xs = out[0] as List;
       final ys = out[1] as List;
       final ws = out[2] as List;
       final hs = out[3] as List;
       final cs = out[4] as List;
       final ks = out[5] as List;
+
+      debugPrint('📤 CHW Layout - N=${xs.length}');
+
+      // Debug first few detections
+      for (int i = 0; i < math.min(3, xs.length); i++) {
+        final x = isFloat ? (xs[i] as num).toDouble() : _dq(xs[i] as num);
+        final y = isFloat ? (ys[i] as num).toDouble() : _dq(ys[i] as num);
+        final w = isFloat ? (ws[i] as num).toDouble() : _dq(ws[i] as num);
+        final h = isFloat ? (hs[i] as num).toDouble() : _dq(hs[i] as num);
+        final conf = isFloat ? (cs[i] as num).toDouble() : _dq(cs[i] as num);
+        final cls = (isFloat ? (ks[i] as num).toDouble() : _dq(ks[i] as num))
+            .round();
+
+        debugPrint(
+          '📤 Detection[$i]: x=$x, y=$y, w=$w, h=$h, conf=$conf, cls=$cls',
+        );
+      }
+
       for (int i = 0; i < numDet!; i++) {
         final x = isFloat ? (xs[i] as num).toDouble() : _dq(xs[i] as num);
         final y = isFloat ? (ys[i] as num).toDouble() : _dq(ys[i] as num);
@@ -571,9 +697,28 @@ class DetectionController extends GetxController {
       return dets;
     }
 
+    // Layout: [1, N, 6] - channels last
     final out = (output as List)[0] as List;
+    debugPrint('📤 HWC Layout - N=${out.length}');
+
+    // Debug first few detections
+    for (int i = 0; i < math.min(3, out.length); i++) {
+      final row = out[i] as List;
+      if (row.length >= 6) {
+        final vals = row
+            .take(6)
+            .map((v) => isFloat ? (v as num).toDouble() : _dq(v as num))
+            .toList();
+        debugPrint(
+          '📤 Detection[$i]: [${vals.map((v) => v.toStringAsFixed(3)).join(', ')}]',
+        );
+      }
+    }
+
     for (int i = 0; i < numDet!; i++) {
       final row = out[i] as List;
+      if (row.length < 6) continue;
+
       final v0 = isFloat ? (row[0] as num).toDouble() : _dq(row[0] as num);
       final v1 = isFloat ? (row[1] as num).toDouble() : _dq(row[1] as num);
       final v2 = isFloat ? (row[2] as num).toDouble() : _dq(row[2] as num);
@@ -582,8 +727,10 @@ class DetectionController extends GetxController {
       final cls = (isFloat ? (row[5] as num).toDouble() : _dq(row[5] as num))
           .round();
 
+      // Auto-detect format (xyxy vs xywh)
       final looksLikeNms = (v2 >= v0 && v3 >= v1) || (v2 > 1.5 || v3 > 1.5);
       if (looksLikeNms) {
+        // XYXY format
         final isPixel = (v2 > 1.5 || v3 > 1.5);
         final sx = isPixel ? (1.0 / inW!) : 1.0;
         final sy = isPixel ? (1.0 / inH!) : 1.0;
@@ -594,30 +741,74 @@ class DetectionController extends GetxController {
         final hh = (y2 - y1).abs();
         dets.add(_Det(cx, cy, ww, hh, conf, cls));
       } else {
+        // XYWH format
         dets.add(_Det(v0, v1, v2, v3, conf, cls));
       }
     }
+
     return dets;
   }
 
   List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.3, int topK = 100}) {
+    debugPrint('🔍 Before NMS: ${dets.length} detections');
+
+    // แสดงผลลัพธ์ก่อน NMS (แสดงแค่ 10 ตัวแรก)
+    for (int i = 0; i < dets.length && i < 10; i++) {
+      final d = dets[i];
+      final label = d.cls < labels.length ? labels[d.cls] : 'unknown';
+      debugPrint('  [$i] $label: conf=${d.conf.toStringAsFixed(3)}');
+    }
+
     dets.sort((a, b) => b.conf.compareTo(a.conf));
     final keep = <_Det>[];
     final used = List<bool>.filled(dets.length, false);
 
+    // **แก้ไขตรงนี้** - วน loop แยกกัน
     for (int i = 0; i < dets.length; i++) {
       if (used[i]) continue;
       final a = dets[i];
       keep.add(a);
+
+      // Debug: แสดงผลที่เก็บไว้
+      final aLabel = a.cls < labels.length ? labels[a.cls] : 'unknown';
+      debugPrint('✅ Keep: $aLabel (conf=${a.conf.toStringAsFixed(3)})');
+
       if (keep.length >= topK) break;
 
+      int suppressCount = 0;
+      // วน loop แยกเพื่อหา detection ที่จะ suppress
       for (int j = i + 1; j < dets.length; j++) {
         if (used[j]) continue;
         final b = dets[j];
+
+        // ถ้าต่าง class ไม่ suppress กัน
         if (a.cls != b.cls) continue;
-        if (_iou(a, b) > iouThresh) used[j] = true;
+
+        final iou = _iou(a, b);
+        if (iou > iouThresh) {
+          used[j] = true;
+          suppressCount++;
+
+          // Debug: แสดงผลที่ถูก suppress
+          final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
+          debugPrint(
+            '❌ Suppress: $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
+          );
+        }
+      }
+
+      // แสดงจำนวนที่ถูก suppress
+      if (suppressCount > 0) {
+        debugPrint('   └─ Suppressed $suppressCount detections of same class');
       }
     }
+
+    // สรุปผลลัพธ์หลัง NMS
+    debugPrint('🔍 After NMS: ${keep.length} detections');
+    final ripeCountNMS = keep.where((d) => d.cls == 0).length;
+    final unripeCountNMS = keep.where((d) => d.cls == 1).length;
+    debugPrint('📊 NMS Result: ripe=$ripeCountNMS, unripe=$unripeCountNMS');
+
     return keep;
   }
 
