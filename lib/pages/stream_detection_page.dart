@@ -94,7 +94,8 @@ class StreanDetectionPage extends GetView<DetectionController> {
               ),
               child: Text(
                 // ใช้ displayClass แทน re["detectedClass"]
-                "$displayClass ${(re["confidenceInClass"] * 100).toStringAsFixed(0)}%",
+                "$displayClass",
+                // "$displayClass ${(re["confidenceInClass"] * 100).toStringAsFixed(0)}%",
                 style: TextStyle(
                   background: Paint()
                     ..color = getBorderColor(re["detectedClass"]),

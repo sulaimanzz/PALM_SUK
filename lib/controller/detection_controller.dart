@@ -95,18 +95,6 @@ class DetectionController extends GetxController {
     );
   }
 
-  // ฟังก์ชันใหม่สำหรับบันทึกและแสดงการแจ้งเตือน
-  // Future<void> saveAndNotify() async {
-  //   await savePalmRecord();
-  //   Get.snackbar(
-  //     'บันทึกข้อมูล',
-  //     'บันทึกข้อมูลเรียบร้อยแล้ว',
-  //     snackPosition: SnackPosition.BOTTOM,
-  //     backgroundColor: Colors.green,
-  //     colorText: Colors.white,
-  //   );
-  // }
-
   void showSaveNotification(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -378,6 +366,9 @@ class DetectionController extends GetxController {
     );
     await cameraController.initialize();
     isInitialized.value = true;
+     // 🎯 เพิ่มโค้ดส่วนนี้เพื่อลดความสว่าง
+  // ลองตั้งค่าเป็น -1.5 หรือ -2.0 หากภาพยังสว่างอยู่
+  await setExposureBias(-1.3); 
   }
 
   Future<void> toggleCamera() async {
@@ -392,6 +383,20 @@ class DetectionController extends GetxController {
       isCameraRunning.value = false;
     }
   }
+
+  // ฟังก์ชันปรับค่าชดเชยแสง (Exposure Bias)
+Future<void> setExposureBias(double offset) async {
+  if (isInitialized.value && cameraController.value.isInitialized) {
+    try {
+      // ค่า offset จะถูกจำกัดโดยค่า min/max ที่กล้องรองรับ
+      await cameraController.setExposureOffset(offset);
+      debugPrint('📸 Exposure bias set to $offset');
+    } catch (e) {
+      debugPrint('❌ Failed to set exposure offset: $e');
+    }
+  }
+}
+
 
   Future<void> _startStream() async {
     if (_interp == null) {
@@ -792,74 +797,106 @@ class DetectionController extends GetxController {
 
     return dets;
   }
+  // กำหนดค่า IoU สำหรับการซ้อนทับข้ามคลาส (90%)
+ double crossClassIouThresh = 0.90;
 
-  List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.2, int topK = 100}) {
-    debugPrint('🔍 Before NMS: ${dets.length} detections');
+  
+List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.2, int topK = 100}) {
+  debugPrint('🔍 Before NMS: ${dets.length} detections');
 
-    // แสดงผลลัพธ์ก่อน NMS (แสดงแค่ 10 ตัวแรก)
-    for (int i = 0; i < dets.length && i < 10; i++) {
-      final d = dets[i];
-      final label = d.cls < labels.length ? labels[d.cls] : 'unknown';
-      debugPrint('  [$i] $label: conf=${d.conf.toStringAsFixed(3)}');
-    }
+  // แสดงผลลัพธ์ก่อน NMS (แสดงแค่ 10 ตัวแรก)
+  for (int i = 0; i < dets.length && i < 10; i++) {
+    final d = dets[i];
+    final label = d.cls < labels.length ? labels[d.cls] : 'unknown';
+    debugPrint('  [$i] $label: conf=${d.conf.toStringAsFixed(3)}');
+  }
 
-    dets.sort((a, b) => b.conf.compareTo(a.conf));
-    final keep = <_Det>[];
-    final used = List<bool>.filled(dets.length, false);
+  dets.sort((a, b) => b.conf.compareTo(a.conf));
+  final keep = <_Det>[];
+  final used = List<bool>.filled(dets.length, false);
 
-    // **แก้ไขตรงนี้** - วน loop แยกกัน
-    for (int i = 0; i < dets.length; i++) {
-      if (used[i]) continue;
-      final a = dets[i];
-      keep.add(a);
+  for (int i = 0; i < dets.length; i++) {
+    if (used[i]) continue;
+    final a = dets[i]; // Detection ที่มี Confidence สูงกว่า
 
-      // Debug: แสดงผลที่เก็บไว้
-      final aLabel = a.cls < labels.length ? labels[a.cls] : 'unknown';
-      debugPrint('✅ Keep: $aLabel (conf=${a.conf.toStringAsFixed(3)})');
-
-      if (keep.length >= topK) break;
-
-      int suppressCount = 0;
-      // วน loop แยกเพื่อหา detection ที่จะ suppress
+    // 🎯 FIX: ส่วนที่ 1 - การยกเลิก Ripe (a.cls == 0) หากซ้อนทับกับ Unripe (b.cls == 1) ที่มั่นใจต่ำกว่า
+    if (a.cls == 0) { // ถ้า 'a' เป็น Ripe (0)
+      bool mustSuppressRipe = false;
+      // ตรวจสอบกับทุก detection ที่มั่นใจต่ำกว่า (j > i)
       for (int j = i + 1; j < dets.length; j++) {
         if (used[j]) continue;
         final b = dets[j];
 
-        final iou = _iou(a, b);
-
-        // 🎯 **ส่วนที่แก้ไข: ใช้เงื่อนไข 2 แบบ**
-        // กรณีคลาสเดียวกัน
-        if (a.cls == b.cls && iou > iouThresh) {
-          used[j] = true;
-          suppressCount++;
-          final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
-          debugPrint(
-            '❌ Suppress: $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
-          );
-        } 
-         // กรณีต่างคลาส แต่ทับซ้อนเกิน 90%
-        // else if (a.cls != b.cls && iou > 0.80) {
-        //   used[j] = true;
-        //   suppressCount++;
-        //   final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
-        //   debugPrint(
-        //     '❌ Suppress (Cross-Class): $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
-        //   );
-        // }
+        // ถ้า 'b' เป็น Unripe (1) และมีการซ้อนทับสูง
+        if (b.cls == 1 && _iou(a, b) > crossClassIouThresh) {
+          mustSuppressRipe = true;
+          break; // พบแล้ว หยุดการตรวจสอบ
+        }
       }
 
-      if (suppressCount > 0) {
-        debugPrint('   └─ Suppressed $suppressCount detections');
+      if (mustSuppressRipe) {
+        used[i] = true; // สยบ Ripe (a) ตัวมันเอง
+        final aLabel = a.cls < labels.length ? labels[a.cls] : 'unknown';
+        debugPrint('❌ Suppress (Ripe due to lower-conf Unripe overlap): $aLabel (conf=${a.conf.toStringAsFixed(3)})');
+        continue; // ข้ามการเพิ่ม Ripe (a) ไปยัง keep
       }
     }
 
-    debugPrint('🔍 After NMS: ${keep.length} detections');
-    final ripeCountNMS = keep.where((d) => d.cls == 0).length;
-    final unripeCountNMS = keep.where((d) => d.cls == 1).length;
-    debugPrint('📊 NMS Result: ripe=$ripeCountNMS, unripe=$unripeCountNMS');
+    // ถ้า Ripe (a) รอดจากการ Suppress หรือ 'a' เป็น Unripe
+    keep.add(a); // เก็บ Detection ที่รอดไว้
+    final aLabel = a.cls < labels.length ? labels[a.cls] : 'unknown';
+    debugPrint('✅ Keep: $aLabel (conf=${a.conf.toStringAsFixed(3)})');
 
-    return keep;
+    if (keep.length >= topK) break;
+
+    int suppressCount = 0;
+    // ส่วนที่ 2: NMS ตามปกติ + Unripe suppresses Ripe
+    for (int j = i + 1; j < dets.length; j++) {
+      if (used[j]) continue;
+      final b = dets[j]; // Detection ที่มี Confidence ต่ำกว่า
+
+      final iou = _iou(a, b);
+
+      // 1. กรณีคลาสเดียวกัน: NMS ตามปกติ
+      if (a.cls == b.cls && iou > iouThresh) {
+        used[j] = true; // สยบ b
+        suppressCount++;
+        final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
+        debugPrint(
+          '❌ Suppress (Same-Class): $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
+        );
+      }
+      // 2. กรณีต่างคลาสและซ้อนทับสูง: Unripe (a) สยบ Ripe (b)
+      else if (a.cls != b.cls && iou > crossClassIouThresh) {
+        // Class Indices: ripe=0, unripe=1
+        
+        // 2a. ถ้า a เป็น Unripe (1) และ b เป็น Ripe (0):
+        if (a.cls == 1 && b.cls == 0) {
+          used[j] = true; // สยบ Ripe (b)
+          suppressCount++;
+          final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
+          debugPrint(
+            '❌ Suppress (Unripe > Ripe, IoU=${iou.toStringAsFixed(3)}): $bLabel (conf=${b.conf.toStringAsFixed(3)})',
+          );
+        }
+        
+        // 2b. ถ้า a เป็น Ripe (0) และ b เป็น Unripe (1):
+        // ไม่ต้องทำอะไร เพราะ Ripe (a) จะถูก Suppress ใน FIX ส่วนที่ 1 ไปแล้ว
+      }
+    }
+
+    if (suppressCount > 0) {
+      debugPrint('   └─ Suppressed $suppressCount detections');
+    }
   }
+
+  debugPrint('🔍 After NMS: ${keep.length} detections');
+  final ripeCountNMS = keep.where((d) => d.cls == 0).length;
+  final unripeCountNMS = keep.where((d) => d.cls == 1).length;
+  debugPrint('📊 NMS Result: ripe=$ripeCountNMS, unripe=$unripeCountNMS');
+
+  return keep;
+}
 
   double _iou(_Det a, _Det b) {
     final ax1 = a.x - a.w / 2,
