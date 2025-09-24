@@ -19,6 +19,10 @@ class ReportPage extends GetView<DetectionController> {
             fontWeight: FontWeight.bold,
           ),
         ),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios, color: PWhite), // 🎯 แก้ไขสี leading icon เป็น PWhite
+          onPressed: () => Get.back(),
+        ),
         backgroundColor: PBrown,
         elevation: 0,
       ),

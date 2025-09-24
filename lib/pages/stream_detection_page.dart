@@ -31,14 +31,15 @@ class StreanDetectionPage extends GetView<DetectionController> {
       }
 
       return controller.recognitions.map((re) {
-        if (re["confidenceInClass"] as double >= 0.2) {
+        // if (re["confidenceInClass"] as double >= 0.2) 
+        {
           final rect = re["rect"];
 
           // คำนวณพิกัดใหม่เพื่อแก้ไขการหมุนและสะท้อน
           final double normalizedX =
               (controller.imgH.value - (rect["y"] + rect["h"])) /
               controller.imgH.value;
-          final double normalizedY = rect["x"] / controller.imgW.value * 1.88 ;
+          final double normalizedY = rect["x"] / controller.imgW.value * 1.88;
           final double normalizedW = rect["h"] / controller.imgH.value * 1.1;
           final double normalizedH = rect["w"] / controller.imgW.value * 1.38;
 
@@ -66,6 +67,17 @@ class StreanDetectionPage extends GetView<DetectionController> {
           final double screenW = normalizedW * previewWidth;
           final double screenH = normalizedH * previewHeight;
 
+          // 🎯 **ส่วนที่แก้ไข**
+          String displayClass;
+          final detectedClass = re["detectedClass"] as String;
+          if (detectedClass == 'ripe') {
+            displayClass = 'ปาล์มสุก';
+          } else if (detectedClass == 'unripe') {
+            displayClass = 'ปาล์มดิบ';
+          } else {
+            displayClass = detectedClass; // แสดงตามชื่อเดิมหากไม่ใช่ 3 คลาสนี้
+          }
+
           // ... ส่วนที่เหลือของโค้ด Container
           return Positioned(
             left: screenX,
@@ -81,7 +93,8 @@ class StreanDetectionPage extends GetView<DetectionController> {
                 ),
               ),
               child: Text(
-                "${re["detectedClass"]} ${(re["confidenceInClass"] * 100).toStringAsFixed(0)}%",
+                // ใช้ displayClass แทน re["detectedClass"]
+                "$displayClass ${(re["confidenceInClass"] * 100).toStringAsFixed(0)}%",
                 style: TextStyle(
                   background: Paint()
                     ..color = getBorderColor(re["detectedClass"]),
@@ -91,8 +104,9 @@ class StreanDetectionPage extends GetView<DetectionController> {
               ),
             ),
           );
-        } else {
-          return const SizedBox.shrink();
+        // } 
+        // else {
+        //   return const SizedBox.shrink();
         }
       }).toList();
     }
@@ -136,7 +150,12 @@ class StreanDetectionPage extends GetView<DetectionController> {
                     ? controller.imgW.value / controller.imgH.value
                     : 640 / 480, // กำหนดค่า default เมื่อยังไม่มีค่า
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 20, left: 20, right: 20 ,bottom: 15),
+                  padding: const EdgeInsets.only(
+                    top: 20,
+                    left: 20,
+                    right: 20,
+                    bottom: 15,
+                  ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(20),
                     child: Stack(
@@ -267,8 +286,10 @@ class StreanDetectionPage extends GetView<DetectionController> {
                                 SizedBox(width: 10.0),
                                 GestureDetector(
                                   onTap: () async {
-                                    await controller
-                                        .savePalmRecord(); // บันทึกข้อมูล
+                                    // เรียกใช้ฟังก์ชันบันทึกข้อมูล
+                                    await controller.savePalmRecord();
+                                    // แสดงแจ้งเตือน
+                                    controller.showSaveNotification(context);
                                   },
                                   child: Container(
                                     margin: const EdgeInsets.symmetric(

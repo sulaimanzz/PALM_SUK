@@ -2,6 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:palm_app/color/colors.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:math' as math;
@@ -56,8 +57,8 @@ class DetectionController extends GetxController {
   Rx<DateTime?> selectedDate = Rx<DateTime?>(null);
 
   // thresholds
-  double confThresh = 0.3;
-  double iouThresh = 0.3;
+  double confThresh = 0.2;
+  double iouThresh = 0.2;
   int topK = 50;
 
   // ฐานข้อมูล
@@ -91,6 +92,29 @@ class DetectionController extends GetxController {
     savePalmRecord();
     debugPrint(
       'Saved record: ripe=${ripeCount.value}, unripe=${unripeCount.value}',
+    );
+  }
+
+  // ฟังก์ชันใหม่สำหรับบันทึกและแสดงการแจ้งเตือน
+  // Future<void> saveAndNotify() async {
+  //   await savePalmRecord();
+  //   Get.snackbar(
+  //     'บันทึกข้อมูล',
+  //     'บันทึกข้อมูลเรียบร้อยแล้ว',
+  //     snackPosition: SnackPosition.BOTTOM,
+  //     backgroundColor: Colors.green,
+  //     colorText: Colors.white,
+  //   );
+  // }
+
+  void showSaveNotification(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('บันทึกข้อมูลเรียบร้อยแล้ว'),
+        duration: Duration(seconds: 3), // แสดงเป็นเวลา 3 วินาที
+        backgroundColor: PGreen.withOpacity(0.8),
+        behavior: SnackBarBehavior.floating, // ทำให้เป็นแบบลอย
+      ),
     );
   }
 
@@ -169,6 +193,22 @@ class DetectionController extends GetxController {
       initialDate: selectedDate.value ?? DateTime.now(),
       firstDate: DateTime(2000),
       lastDate: DateTime.now(),
+      builder: (BuildContext context, Widget? child) {
+        // 🎯 เพิ่ม Theme เพื่อกำหนดสีของปฏิทินป๊อปอัป
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: ColorScheme.light(
+              primary: PBrown, // สีของหัวปฏิทินและวันที่ที่เลือก
+              onPrimary: PWhite, // สีของข้อความในหัวปฏิทิน (เช่นปี, เดือน)
+              onSurface: PBlack, // สีของข้อความในปฏิทิน (เช่นวัน, เดือนอื่นๆ)
+              surface: PWhite, // สีพื้นหลังของปฏิทิน
+            ),
+            // คุณสามารถเพิ่มการปรับแต่งอื่นๆ ได้ที่นี่
+            dialogBackgroundColor: PWhite, // สีพื้นหลังของ Dialog
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null) {
       selectedDate.value = picked;
@@ -181,6 +221,9 @@ class DetectionController extends GetxController {
     await _loadModelAndLabels();
     selectedDate.value = DateTime.now();
     await getPalmRecords(selectedDate.value);
+    // 🎯 **ย้ายการรีเซ็ตมาที่นี่**
+    ripeCount.value = 0;
+    unripeCount.value = 0;
     super.onInit();
   }
 
@@ -208,23 +251,28 @@ class DetectionController extends GetxController {
       try {
         opt.addDelegate(XNNPackDelegate());
       } catch (_) {}
-      _interp = await Interpreter.fromAsset(
-        'assets/models/best_int8.tflite',
-        // 'assets/models/int8.tflite',
-        // 'assets/models/palm_best_float16.tflite',
-        // 'assets/models/palm.tflite', // รองรับทั้ง float / int8
-        options: opt,
-      );
+      final String modelPath =
+          // 'assets/models/int8.tflite'
+          'assets/models/best_int8.tflite'
+      // 'assets/models/best_float16.tflite',
+      // 'assets/models/int8.tflite',
+      // 'assets/models/palm_best_float16.tflite',
+      // 'assets/models/palm.tflite', // รองรับทั้ง float / int8
+      ;
+      _interp = await Interpreter.fromAsset(modelPath, options: opt);
+      // 🎯 เพิ่ม Debug Log
+      debugPrint('✅ TFLite model loaded from asset: $modelPath');
     } catch (e) {
       debugPrint('⚠️! XNNPACK failed ($e), fallback CPU only');
       final opt = InterpreterOptions()..threads = 4;
-      _interp = await Interpreter.fromAsset(
-        // 'assets/models/best_int8.tflite',
-
-        // 'assets/models/int8.tflite',
-        'assets/models/best_float16.tflite',
-        options: opt,
-      );
+      final String modelPath =
+          // 'assets/models/int8.tflite'
+          // 'assets/models/best_float16.tflite',
+          // 'assets/models/int8.tflite',
+          'assets/models/best_int8.tflite';
+      _interp = await Interpreter.fromAsset(modelPath, options: opt);
+      // 🎯 เพิ่ม Debug Log
+      debugPrint('✅ TFLite model loaded from asset: $modelPath');
     }
     debugPrint('✅ TFLite model loaded');
 
@@ -375,9 +423,9 @@ class DetectionController extends GetxController {
         _interp == null ||
         inW == null ||
         inH == null ||
-        numDet == null)
+        numDet == null) {
       return;
-
+    }
     _frameIdx = (_frameIdx + 1) % processEveryN;
     if (_frameIdx != 0) return;
 
@@ -385,6 +433,7 @@ class DetectionController extends GetxController {
     recognitions.clear();
     ripeCount.value = 0;
     unripeCount.value = 0;
+    
 
     try {
       imgW.value = img.width.toDouble();
@@ -426,28 +475,31 @@ class DetectionController extends GetxController {
       );
 
       final filtered = _nms(
-        dets.where((d) => d.conf >= 0.1).toList(), // ใช้ค่าเริ่มต้นที่ต่ำก่อนกรอง
+        dets
+            .where((d) => d.conf >= 0.1)
+            .toList(), // ใช้ค่าเริ่มต้นที่ต่ำก่อนกรอง
         iouThresh: iouThresh,
         topK: topK,
       );
 
-      // final filtered = dets.where((d) => d.conf >= confThresh).toList();
-
-      // 🎯 **ส่วนที่แก้ไขและเพิ่ม Debug**
+    
       for (final d in filtered) {
+        // เพิ่มเงื่อนไขการกรองที่นี่
+      if (d.conf >= confThresh) { // 🎯 ใช้ confThresh ที่กำหนดไว้ด้านบน
         final idx = d.cls;
         final clsName = (idx >= 0 && idx < labels.length)
             ? labels[idx]
             : 'Unknown';
 
-        // กำหนดเงื่อนไขการแสดงผลตามความมั่นใจของแต่ละคลาส
+        // 🎯 ส่วนที่แก้ไข: จัดการการนับและการแสดงผลในลูปเดียวกัน
+        // โดยใช้เงื่อนไขที่กำหนดไว้ก่อนหน้า
         bool shouldShow = false;
-        if (clsName == 'ripe' && d.conf >= 0.70) {
+        if (clsName == 'ripe') {
           shouldShow = true;
-          ripeCount.value++;
-        } else if (clsName == 'unripe' && d.conf >= 0.20) {
+          ripeCount.value++; // อัปเดตจำนวนทันทีที่พบ
+        } else if (clsName == 'unripe') {
           shouldShow = true;
-          unripeCount.value++;
+          unripeCount.value++; // อัปเดตจำนวนทันทีที่พบ
         }
 
         if (shouldShow) {
@@ -460,15 +512,7 @@ class DetectionController extends GetxController {
           final ry = math.max(0.0, ymin);
           final rw = math.min(imgW.value, xmax) - rx;
           final rh = math.min(imgH.value, ymax) - ry;
-          
-          // Debug logs for verification
-          debugPrint(
-            '🔍 [DEBUG] Class: $clsName, Confidence: ${d.conf.toStringAsFixed(2)}',
-          );
-          debugPrint(
-            '🔍 [DEBUG] Bbox: x=$rx, y=$ry, w=$rw, h=$rh',
-          );
-          
+
           recognitions.add({
             'clsIndex': idx,
             'detectedClass': clsName,
@@ -477,11 +521,11 @@ class DetectionController extends GetxController {
           });
         }
       }
-      // 🎯 **สิ้นสุดส่วนที่แก้ไข**
+      // 🎯 สิ้นสุดส่วนที่แก้ไข
 
       summaryText.value =
           'พบปาล์มสุก ${ripeCount.value} | ปาล์มดิบ ${unripeCount.value} | รวม ${ripeCount.value + unripeCount.value}';
-    } catch (e, st) {
+    }} catch (e, st) {
       debugPrint('❌ Inference failed: $e\n$st');
     } finally {
       _busy = false;
@@ -749,7 +793,7 @@ class DetectionController extends GetxController {
     return dets;
   }
 
-  List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.3, int topK = 100}) {
+  List<_Det> _nms(List<_Det> dets, {double iouThresh = 0.2, int topK = 100}) {
     debugPrint('🔍 Before NMS: ${dets.length} detections');
 
     // แสดงผลลัพธ์ก่อน NMS (แสดงแค่ 10 ตัวแรก)
@@ -781,29 +825,34 @@ class DetectionController extends GetxController {
         if (used[j]) continue;
         final b = dets[j];
 
-        // ถ้าต่าง class ไม่ suppress กัน
-        if (a.cls != b.cls) continue;
-
         final iou = _iou(a, b);
-        if (iou > iouThresh) {
+
+        // 🎯 **ส่วนที่แก้ไข: ใช้เงื่อนไข 2 แบบ**
+        // กรณีคลาสเดียวกัน
+        if (a.cls == b.cls && iou > iouThresh) {
           used[j] = true;
           suppressCount++;
-
-          // Debug: แสดงผลที่ถูก suppress
           final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
           debugPrint(
             '❌ Suppress: $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
           );
-        }
+        } 
+         // กรณีต่างคลาส แต่ทับซ้อนเกิน 90%
+        // else if (a.cls != b.cls && iou > 0.80) {
+        //   used[j] = true;
+        //   suppressCount++;
+        //   final bLabel = b.cls < labels.length ? labels[b.cls] : 'unknown';
+        //   debugPrint(
+        //     '❌ Suppress (Cross-Class): $bLabel (conf=${b.conf.toStringAsFixed(3)}, IoU=${iou.toStringAsFixed(3)})',
+        //   );
+        // }
       }
 
-      // แสดงจำนวนที่ถูก suppress
       if (suppressCount > 0) {
-        debugPrint('   └─ Suppressed $suppressCount detections of same class');
+        debugPrint('   └─ Suppressed $suppressCount detections');
       }
     }
 
-    // สรุปผลลัพธ์หลัง NMS
     debugPrint('🔍 After NMS: ${keep.length} detections');
     final ripeCountNMS = keep.where((d) => d.cls == 0).length;
     final unripeCountNMS = keep.where((d) => d.cls == 1).length;
